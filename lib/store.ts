@@ -1,6 +1,6 @@
 import { promises as fs } from 'fs'
 import path from 'path'
-import { Studio, BookingData, DEFAULT_STUDIO_IMAGE } from './data'
+import { Studio, BookingData, PaymentSettings, defaultPaymentSettings, DEFAULT_STUDIO_IMAGE } from './data'
 
 const DATA_DIR = path.join(process.cwd(), 'data')
 const DB_FILE = path.join(DATA_DIR, 'db.json')
@@ -8,6 +8,7 @@ const DB_FILE = path.join(DATA_DIR, 'db.json')
 export interface DbShape {
   rooms: Studio[]
   bookings: BookingData[]
+  settings: { payment: PaymentSettings }
 }
 
 export const seedRoom: Studio = {
@@ -44,7 +45,7 @@ export const seedRoom: Studio = {
 }
 
 function freshDb(): DbShape {
-  return { rooms: [seedRoom], bookings: [] }
+  return { rooms: [seedRoom], bookings: [], settings: { payment: { ...defaultPaymentSettings } } }
 }
 
 export async function readDb(): Promise<DbShape> {
@@ -54,6 +55,9 @@ export async function readDb(): Promise<DbShape> {
     return {
       rooms: Array.isArray(parsed.rooms) ? parsed.rooms : [],
       bookings: Array.isArray(parsed.bookings) ? parsed.bookings : [],
+      settings: {
+        payment: { ...defaultPaymentSettings, ...(parsed.settings?.payment ?? {}) },
+      },
     }
   } catch {
     const fresh = freshDb()

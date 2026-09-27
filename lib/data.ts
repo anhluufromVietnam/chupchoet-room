@@ -73,6 +73,8 @@ export interface PaymentSettings {
   accountHolder: string
   depositPercent: number
   noteSyntax: string
+  /** Ảnh QR do admin upload; rỗng = dùng VietQR tự sinh */
+  qrImageUrl?: string
 }
 
 export const defaultPaymentSettings: PaymentSettings = {

@@ -1,4 +1,4 @@
-import { Studio, BookingData, BookingStatus, normalizeStudio } from './data'
+import { Studio, BookingData, BookingStatus, PaymentSettings, normalizeStudio } from './data'
 import { auth } from './firebase'
 import { signInWithEmailAndPassword, signOut, onAuthStateChanged, User } from 'firebase/auth'
 
@@ -80,6 +80,17 @@ export async function uploadImages(files: File[]): Promise<string[]> {
   }
   const data = (await res.json()) as { urls: string[] }
   return data.urls
+}
+
+export async function getPaymentSettings(): Promise<PaymentSettings> {
+  return request<PaymentSettings>('/api/settings')
+}
+
+export async function savePaymentSettings(settings: PaymentSettings): Promise<PaymentSettings> {
+  return request<PaymentSettings>('/api/settings', {
+    method: 'PUT',
+    body: JSON.stringify(settings),
+  })
 }
 
 export async function loginAdmin(email: string, password: string): Promise<User> {

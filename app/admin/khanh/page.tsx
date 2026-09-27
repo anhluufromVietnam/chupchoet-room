@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
 import {
@@ -25,6 +25,7 @@ import {
   Edit,
   Building,
   TriangleAlert,
+  Upload,
 } from 'lucide-react'
 import {
   Studio,
@@ -38,7 +39,9 @@ import {
 import {
   deleteRoom,
   getBookings,
+  getPaymentSettings,
   getRooms,
+  savePaymentSettings,
   saveRoom,
   updateBookingStatus,
   uploadImages,
@@ -150,6 +153,8 @@ export default function AdminDashboardPage() {
   // Payment settings state
   const [paymentConfig, setPaymentConfig] = useState<PaymentSettings>(defaultPaymentSettings)
   const [saveSuccessMsg, setSaveSuccessMsg] = useState('')
+  const [savingSettings, setSavingSettings] = useState(false)
+  const [uploadingQr, setUploadingQr] = useState(false)
 
   // Authentication Guard
   useEffect(() => {
@@ -160,9 +165,14 @@ export default function AdminDashboardPage() {
           const parsed = JSON.parse(stored)
           if (parsed.loggedIn) {
             setAuth(parsed)
-            const [rooms, bookings] = await Promise.all([getRooms(), getBookings()])
+            const [rooms, bookings, settings] = await Promise.all([
+              getRooms(),
+              getBookings(),
+              getPaymentSettings().catch(() => defaultPaymentSettings),
+            ])
             setRoomsList(rooms)
             setBookingsList(bookings)
+            setPaymentConfig(settings)
             setCheckingAuth(false)
             return
           }
@@ -195,6 +205,81 @@ export default function AdminDashboardPage() {
       console.error('Error while updating booking status in Firestore:', error)
     }
   }
+
+  // ===== Real dashboard stats computed from bookingsList =====
+  const PAID_STATUSES: BookingStatus[] = ['da_xac_nhan', 'dang_thue', 'da_hoan_thanh', 'deposit_paid']
+
+  const dashboardStats = useMemo(() => {
+    const paid = bookingsList.filter((b) => PAID_STATUSES.includes(b.status))
+    const totalRevenue = paid.reduce((sum, b) => sum + (Number(b.totalPrice) || 0), 0)
+
+    const now = new Date()
+    const monthStart = new Date(now.getFullYear(), now.getMonth(), 1)
+    const lastMonthStart = new Date(now.getFullYear(), now.getMonth() - 1, 1)
+    const inRange = (b: BookingData, from: Date, to?: Date) => {
+      const d = new Date(b.createdAt)
+      if (Number.isNaN(d.getTime())) return false
+      return to ? d >= from && d < to : d >= from
+    }
+    const monthRevenue = paid.filter((b) => inRange(b, monthStart)).reduce((s, b) => s + (Number(b.totalPrice) || 0), 0)
+    const lastMonthRevenue = paid
+      .filter((b) => inRange(b, lastMonthStart, monthStart))
+      .reduce((s, b) => s + (Number(b.totalPrice) || 0), 0)
+    const growthPercent =
+      lastMonthRevenue > 0 ? ((monthRevenue - lastMonthRevenue) / lastMonthRevenue) * 100 : null
+
+    // Daily revenue for the last 14 days (chart)
+    const days: { label: string; value: number }[] = []
+    for (let i = 13; i >= 0; i--) {
+      const day = new Date(now.getFullYear(), now.getMonth(), now.getDate() - i)
+      const next = new Date(now.getFullYear(), now.getMonth(), now.getDate() - i + 1)
+      const value = paid
+        .filter((b) => inRange(b, day, next))
+        .reduce((s, b) => s + (Number(b.totalPrice) || 0), 0)
+      days.push({ label: `${String(day.getDate()).padStart(2, '0')}/${String(day.getMonth() + 1).padStart(2, '0')}`, value })
+    }
+
+    return {
+      totalRevenue,
+      monthRevenue,
+      growthPercent,
+      totalCount: bookingsList.length,
+      pendingCount: bookingsList.filter((b) => b.status === 'chua_xac_nhan' || b.status === 'pending').length,
+      rentingCount: bookingsList.filter((b) => b.status === 'dang_thue').length,
+      doneCount: bookingsList.filter((b) => b.status === 'da_hoan_thanh').length,
+      chartDays: days,
+    }
+  }, [bookingsList])
+
+  const [revenueRange, setRevenueRange] = useState<'month' | 'all'>('month')
+  const displayedRevenue = revenueRange === 'month' ? dashboardStats.monthRevenue : dashboardStats.totalRevenue
+
+  // Build a smooth SVG path from real daily revenue values
+  const revenueChart = useMemo(() => {
+    const values = dashboardStats.chartDays.map((d) => d.value)
+    const max = Math.max(...values, 1)
+    const W = 500
+    const H = 150
+    const step = values.length > 1 ? W / (values.length - 1) : W
+    const points = values.map((v, i) => {
+      const x = i * step
+      const y = H - 12 - (v / max) * (H - 30)
+      return { x, y }
+    })
+    let line = ''
+    points.forEach((p, i) => {
+      if (i === 0) {
+        line += `M ${p.x.toFixed(1)},${p.y.toFixed(1)}`
+      } else {
+        const prev = points[i - 1]
+        const cx = (prev.x + p.x) / 2
+        line += ` C ${cx.toFixed(1)},${prev.y.toFixed(1)} ${cx.toFixed(1)},${p.y.toFixed(1)} ${p.x.toFixed(1)},${p.y.toFixed(1)}`
+      }
+    })
+    const area = `${line} L ${W},${H} L 0,${H} Z`
+    return { line, area, points, labels: dashboardStats.chartDays.map((d) => d.label) }
+  }, [dashboardStats])
+
 
   // Handle Add Room submit
   const handleAddRoomSubmit = async (e: React.FormEvent) => {
@@ -329,10 +414,47 @@ export default function AdminDashboardPage() {
   }
 
   // Handle Payment Settings Save
-  const handleSavePaymentConfig = (e: React.FormEvent) => {
+  const handleSavePaymentConfig = async (e: React.FormEvent) => {
     e.preventDefault()
-    setSaveSuccessMsg('Đã lưu cấu hình thanh toán thành công!')
-    setTimeout(() => setSaveSuccessMsg(''), 3000)
+    setSavingSettings(true)
+    try {
+      const saved = await savePaymentSettings(paymentConfig)
+      setPaymentConfig(saved)
+      setSaveSuccessMsg('Đã lưu cấu hình thanh toán thành công!')
+      setTimeout(() => setSaveSuccessMsg(''), 3000)
+    } catch (error) {
+      console.error('Error saving payment settings:', error)
+      setSaveSuccessMsg('Lưu thất bại — vui lòng thử lại.')
+      setTimeout(() => setSaveSuccessMsg(''), 3000)
+    } finally {
+      setSavingSettings(false)
+    }
+  }
+
+  // Upload custom QR image (replaces auto-generated VietQR on checkout)
+  const handleQrUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files
+    if (!files || files.length === 0) return
+    setUploadingQr(true)
+    try {
+      const [url] = await uploadImages(Array.from(files))
+      setPaymentConfig((prev) => ({ ...prev, qrImageUrl: url }))
+      setSaveSuccessMsg('Đã tải ảnh QR — nhớ bấm "Lưu cấu hình cài đặt" để áp dụng.')
+      setTimeout(() => setSaveSuccessMsg(''), 4000)
+    } catch (error) {
+      console.error('Error uploading QR image:', error)
+      setSaveSuccessMsg('Tải ảnh QR thất bại — vui lòng thử lại.')
+      setTimeout(() => setSaveSuccessMsg(''), 3000)
+    } finally {
+      setUploadingQr(false)
+      e.target.value = ''
+    }
+  }
+
+  const handleRemoveQrImage = () => {
+    setPaymentConfig((prev) => ({ ...prev, qrImageUrl: '' }))
+    setSaveSuccessMsg('Đã bỏ ảnh QR tùy chỉnh — sẽ dùng VietQR tự sinh. Nhớ lưu để áp dụng.')
+    setTimeout(() => setSaveSuccessMsg(''), 4000)
   }
 
   if (checkingAuth) {
@@ -489,16 +611,31 @@ export default function AdminDashboardPage() {
                   <div>
                     <h2 className="font-serif text-3xl font-bold text-emerald-950">Phân tích doanh thu</h2>
                     <p className="mt-1 flex items-center gap-1 text-sm font-semibold text-emerald-600">
-                      <TrendingUp size={16} /> +12.5% so với tháng trước
+                      <TrendingUp size={16} />
+                      {dashboardStats.growthPercent === null
+                        ? 'Chưa có dữ liệu tháng trước để so sánh'
+                        : `${dashboardStats.growthPercent >= 0 ? '+' : ''}${dashboardStats.growthPercent.toFixed(1)}% so với tháng trước`}
                     </p>
                   </div>
 
                   <div className="flex gap-2 text-xs">
-                    <button className="rounded-xl border border-border bg-slate-50 px-3.5 py-1.5 font-medium text-foreground hover:bg-slate-100">
-                      Mặc định
+                    <button
+                      onClick={() => setRevenueRange('month')}
+                      className={`rounded-xl border px-3.5 py-1.5 font-medium transition ${revenueRange === 'month'
+                          ? 'border-border bg-slate-50 text-foreground'
+                          : 'border-border bg-white text-muted-foreground hover:text-foreground'
+                        }`}
+                    >
+                      Tháng này
                     </button>
-                    <button className="rounded-xl border border-border bg-white px-3.5 py-1.5 text-muted-foreground hover:text-foreground">
-                      Tùy chỉnh
+                    <button
+                      onClick={() => setRevenueRange('all')}
+                      className={`rounded-xl border px-3.5 py-1.5 font-medium transition ${revenueRange === 'all'
+                          ? 'border-border bg-slate-50 text-foreground'
+                          : 'border-border bg-white text-muted-foreground hover:text-foreground'
+                        }`}
+                    >
+                      Tất cả
                     </button>
                   </div>
                 </div>
@@ -506,22 +643,24 @@ export default function AdminDashboardPage() {
                 <div className="mt-6">
                   <div className="text-[11px] font-bold uppercase tracking-wider text-muted-foreground">TỔNG THU NHẬP</div>
                   <div className="mt-1 flex items-baseline gap-2">
-                    <span className="font-serif text-4xl font-extrabold text-emerald-950">23.860.000</span>
+                    <span className="font-serif text-4xl font-extrabold text-emerald-950">
+                      {formatCurrency(displayedRevenue).replace(/\s?₫|\s?VNĐ/gi, '')}
+                    </span>
                     <span className="text-sm font-bold text-muted-foreground">VNĐ</span>
                   </div>
 
                   <div className="mt-3">
-                    <button className="inline-flex items-center gap-2 rounded-xl bg-slate-50 border border-border px-4 py-2 text-xs font-medium text-foreground">
-                      Trong tháng này <ChevronDown size={14} className="text-muted-foreground" />
-                    </button>
+                    <span className="inline-flex items-center gap-2 rounded-xl bg-slate-50 border border-border px-4 py-2 text-xs font-medium text-foreground">
+                      Doanh thu từ đơn đã xác nhận / đang thuê / hoàn thành
+                    </span>
                   </div>
                 </div>
               </div>
 
-              {/* Revenue Curve Line Graphic (Matching Reference Image) */}
+              {/* Revenue Curve Line Graphic (real daily revenue, last 14 days) */}
               <div className="pt-6">
                 <div className="relative h-48 w-full">
-                  <svg className="h-full w-full" viewBox="0 0 500 150">
+                  <svg className="h-full w-full" viewBox="0 0 500 150" preserveAspectRatio="none">
                     <defs>
                       <linearGradient id="gradientRevenue" x1="0" y1="0" x2="0" y2="1">
                         <stop offset="0%" stopColor="#6366f1" stopOpacity="0.4" />
@@ -530,36 +669,29 @@ export default function AdminDashboardPage() {
                     </defs>
 
                     {/* Gradient Fill under curve */}
-                    <path
-                      d="M 0,95 C 25,30 45,20 75,50 C 105,80 125,100 160,85 C 195,70 215,65 250,95 C 285,125 320,115 360,110 C 400,105 450,112 500,115 L 500,150 L 0,150 Z"
-                      fill="url(#gradientRevenue)"
-                    />
+                    <path d={revenueChart.area} fill="url(#gradientRevenue)" />
                     {/* Glowing curve line */}
                     <path
-                      d="M 0,95 C 25,30 45,20 75,50 C 105,80 125,100 160,85 C 195,70 215,65 250,95 C 285,125 320,115 360,110 C 400,105 450,112 500,115"
+                      d={revenueChart.line}
                       fill="none"
                       stroke="#6366f1"
                       strokeWidth="3.5"
                       strokeLinecap="round"
                     />
                     {/* Highlighted Data Point Dots */}
-                    <circle cx="75" cy="50" r="5" fill="#ffffff" stroke="#6366f1" strokeWidth="3" />
-                    <circle cx="160" cy="85" r="4" fill="#ffffff" stroke="#6366f1" strokeWidth="2.5" />
-                    <circle cx="250" cy="95" r="4" fill="#ffffff" stroke="#6366f1" strokeWidth="2.5" />
+                    {revenueChart.points.map((p, i) =>
+                      i % 3 === 0 ? (
+                        <circle key={i} cx={p.x} cy={p.y} r="4" fill="#ffffff" stroke="#6366f1" strokeWidth="2.5" />
+                      ) : null
+                    )}
                   </svg>
                 </div>
                 <div className="mt-4 flex justify-between text-[11px] font-medium text-muted-foreground px-2">
-                  <span>01/09</span>
-                  <span>03/09</span>
-                  <span>04/09</span>
-                  <span>05/09</span>
-                  <span>06/09</span>
-                  <span>07/09</span>
-                  <span>08/09</span>
-                  <span>09/09</span>
-                  <span>10/09</span>
-                  <span>11/09</span>
-                  <span>12/09</span>
+                  {revenueChart.labels
+                    .filter((_, i) => i % 3 === 0)
+                    .map((label) => (
+                      <span key={label}>{label}</span>
+                    ))}
                 </div>
               </div>
             </div>
@@ -573,7 +705,7 @@ export default function AdminDashboardPage() {
                     <Box size={20} />
                   </div>
                   <div>
-                    <div className="font-serif text-3xl font-bold text-emerald-950">2792</div>
+                    <div className="font-serif text-3xl font-bold text-emerald-950">{dashboardStats.totalCount}</div>
                     <div className="text-[11px] uppercase tracking-wider text-muted-foreground font-semibold">TỔNG ĐƠN</div>
                   </div>
                 </div>
@@ -584,7 +716,7 @@ export default function AdminDashboardPage() {
                     <Clock size={20} />
                   </div>
                   <div>
-                    <div className="font-serif text-3xl font-bold text-emerald-950">2</div>
+                    <div className="font-serif text-3xl font-bold text-emerald-950">{dashboardStats.pendingCount}</div>
                     <div className="text-[11px] uppercase tracking-wider text-muted-foreground font-semibold">CHỜ DUYỆT</div>
                   </div>
                 </div>
@@ -595,7 +727,7 @@ export default function AdminDashboardPage() {
                     <Camera size={20} />
                   </div>
                   <div>
-                    <div className="font-serif text-3xl font-bold text-emerald-950">17</div>
+                    <div className="font-serif text-3xl font-bold text-emerald-950">{dashboardStats.rentingCount}</div>
                     <div className="text-[11px] uppercase tracking-wider text-muted-foreground font-semibold">ĐANG THUÊ</div>
                   </div>
                 </div>
@@ -606,7 +738,7 @@ export default function AdminDashboardPage() {
                     <CheckCircle size={20} />
                   </div>
                   <div>
-                    <div className="font-serif text-3xl font-bold text-emerald-950">2182</div>
+                    <div className="font-serif text-3xl font-bold text-emerald-950">{dashboardStats.doneCount}</div>
                     <div className="text-[11px] uppercase tracking-wider text-muted-foreground font-semibold">ĐÃ XONG</div>
                   </div>
                 </div>
@@ -1013,19 +1145,56 @@ export default function AdminDashboardPage() {
               </form>
             </div>
 
-            {/* Right Column: Live VietQR Badge Preview */}
+            {/* Right Column: QR Preview (uploaded image or auto VietQR) */}
             <div className="rounded-3xl bg-white p-6 md:p-8 shadow-sm border border-white/60 flex flex-col justify-between space-y-6">
               <div>
-                <h3 className="font-serif text-2xl font-bold text-emerald-950">Xem trước Mã VietQR</h3>
-                <p className="mt-1 text-xs text-muted-foreground">Mã QR này sẽ hiển thị ở trang Thanh toán Checkout của khách.</p>
+                <h3 className="font-serif text-2xl font-bold text-emerald-950">Ảnh QR nhận tiền</h3>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  Tải ảnh QR của bạn (chụp màn hình app ngân hàng) — khách sẽ quét ảnh này thay vì VietQR tự sinh.
+                </p>
 
                 <div className="mt-6 flex flex-col items-center rounded-2xl bg-amber-50/50 p-6 border border-amber-200">
-                  <div className="flex h-44 w-44 items-center justify-center rounded-2xl bg-emerald-950 text-amber-400 font-mono text-center p-4 shadow-md">
-                    <div>
-                      <div className="font-bold text-xl">VietQR</div>
-                      <div className="mt-1 text-xs text-white uppercase">{paymentConfig.bankName.split(' ')[0]}</div>
-                      <div className="mt-2 text-xs text-amber-300 font-bold">{paymentConfig.depositPercent}% DEPOSIT</div>
+                  {paymentConfig.qrImageUrl ? (
+                    <div className="h-44 w-44 overflow-hidden rounded-2xl bg-white p-2 shadow-md">
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      <img src={paymentConfig.qrImageUrl} alt="Ảnh QR thanh toán" className="h-full w-full object-contain" />
                     </div>
+                  ) : (
+                    <div className="flex h-44 w-44 items-center justify-center rounded-2xl bg-emerald-950 text-amber-400 font-mono text-center p-4 shadow-md">
+                      <div>
+                        <div className="font-bold text-xl">VietQR</div>
+                        <div className="mt-1 text-xs text-white uppercase">{paymentConfig.bankName.split(' ')[0]}</div>
+                        <div className="mt-2 text-xs text-amber-300 font-bold">{paymentConfig.depositPercent}% DEPOSIT</div>
+                      </div>
+                    </div>
+                  )}
+
+                  <div className="mt-4 flex items-center gap-2">
+                    <input
+                      id="qr-image-upload"
+                      type="file"
+                      accept="image/*"
+                      className="hidden"
+                      onChange={handleQrUpload}
+                      disabled={uploadingQr}
+                    />
+                    <button
+                      type="button"
+                      onClick={() => document.getElementById('qr-image-upload')?.click()}
+                      disabled={uploadingQr}
+                      className="inline-flex items-center gap-2 rounded-xl bg-emerald-950 px-4 py-2.5 text-xs font-bold text-white shadow-md transition hover:bg-emerald-900 disabled:opacity-60"
+                    >
+                      <Upload size={14} /> {uploadingQr ? 'Đang tải ảnh...' : 'Tải ảnh QR'}
+                    </button>
+                    {paymentConfig.qrImageUrl && (
+                      <button
+                        type="button"
+                        onClick={handleRemoveQrImage}
+                        className="inline-flex items-center gap-2 rounded-xl border border-rose-200 bg-rose-50 px-4 py-2.5 text-xs font-bold text-rose-700 transition hover:bg-rose-100"
+                      >
+                        <Trash2 size={14} /> Dùng VietQR tự sinh
+                      </button>
+                    )}
                   </div>
 
                   <div className="mt-4 text-center space-y-1 text-xs">

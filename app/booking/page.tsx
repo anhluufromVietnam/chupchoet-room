@@ -18,8 +18,8 @@ import {
   Star,
   Users,
 } from 'lucide-react'
-import { Studio, formatCurrency } from '@/lib/data'
-import { getRooms, createBooking } from '@/lib/services'
+import { Studio, PaymentSettings, formatCurrency, defaultPaymentSettings } from '@/lib/data'
+import { getRooms, createBooking, getPaymentSettings } from '@/lib/services'
 
 const INSTAGRAM_NICK = 'chupchoet.room'
 const INSTAGRAM_URL = `https://www.instagram.com/${INSTAGRAM_NICK}`
@@ -101,6 +101,7 @@ function BookingWizard() {
   const [submitting, setSubmitting] = useState(false)
   const [bookingCode, setBookingCode] = useState<string | null>(null)
   const [copied, setCopied] = useState<string | null>(null)
+  const [paymentSettings, setPaymentSettings] = useState<PaymentSettings>(defaultPaymentSettings)
 
   useEffect(() => {
     let active = true
@@ -114,6 +115,13 @@ function BookingWizard() {
       })
       .finally(() => {
         if (active) setLoadingStudios(false)
+      })
+    getPaymentSettings()
+      .then((settings) => {
+        if (active) setPaymentSettings(settings)
+      })
+      .catch(() => {
+        // keep defaults
       })
     return () => {
       active = false
@@ -134,7 +142,7 @@ function BookingWizard() {
     return selectedStudio.pricePerDay * nights
   }, [selectedStudio, rentalType, hours, nights])
 
-  const depositPrice = depositChoice === 'full' ? totalPrice : Math.round(totalPrice * 0.3)
+  const depositPrice = depositChoice === 'full' ? totalPrice : Math.round(totalPrice * (paymentSettings.depositPercent / 100))
 
   const paymentNote = `CHUPCHOET ${customerPhone || 'SODT'}`
 
@@ -151,15 +159,34 @@ function BookingWizard() {
     step2Errors.push('Số điện thoại chưa đúng — cần 9–11 số (VD: 0912345678)')
   if (instagramNickname.trim().length < 3)
     step2Errors.push('Chưa điền Nick Instagram (tối thiểu 3 ký tự, không cần dấu @)')
+  // Map tên ngân hàng sang mã bank cho VietQR (dùng khi chưa upload ảnh QR riêng)
+  const vietqrBankCode = useMemo(() => {
+    const name = paymentSettings.bankName.toLowerCase()
+    if (name.includes('mb') || name.includes('quân đội')) return 'MB'
+    if (name.includes('vietcom')) return 'VCB'
+    if (name.includes('techcom')) return 'TCB'
+    if (name.includes('vpbank')) return 'VPB'
+    if (name.includes('bidv')) return 'BIDV'
+    if (name.includes('vietin')) return 'CTG'
+    if (name.includes('agribank')) return 'AGR'
+    if (name.includes('acb')) return 'ACB'
+    if (name.includes('tpbank')) return 'TPB'
+    if (name.includes('sacombank')) return 'SCB'
+    return 'MB'
+  }, [paymentSettings.bankName])
+
   const qrUrl = useMemo(() => {
     if (!selectedStudio || totalPrice <= 0) return null
+    // Ưu tiên ảnh QR do admin upload
+    if (paymentSettings.qrImageUrl) return paymentSettings.qrImageUrl
     const params = new URLSearchParams({
       amount: String(depositPrice),
       addInfo: paymentNote,
-      accountName: 'CHUPCHOET ROOM STUDIO',
+      accountName: paymentSettings.accountHolder || 'CHUPCHOET ROOM STUDIO',
     })
-    return `https://img.vietqr.io/image/MB-0369399740-compact2.png?${params.toString()}`
-  }, [selectedStudio, depositPrice, paymentNote])
+    const account = paymentSettings.accountNumber.replace(/\s/g, '') || '0369399740'
+    return `https://img.vietqr.io/image/${vietqrBankCode}-${account}-compact2.png?${params.toString()}`
+  }, [selectedStudio, totalPrice, depositPrice, paymentNote, paymentSettings, vietqrBankCode])
 
   const stepValid = (index: number): boolean => {
     if (index === 0) return Boolean(selectedStudio)
@@ -592,7 +619,7 @@ function BookingWizard() {
                   <strong>{formatCurrency(totalPrice)}</strong>
                 </li>
                 <li className="summary-deposit">
-                  <span>{depositChoice === 'full' ? 'Cần thanh toán' : 'Cần đặt cọc (30%)'}</span>
+                  <span>{depositChoice === 'full' ? 'Cần thanh toán' : `Cần đặt cọc (${paymentSettings.depositPercent}%)`}</span>
                   <strong>{formatCurrency(depositPrice)}</strong>
                 </li>
               </ul>
@@ -613,20 +640,20 @@ function BookingWizard() {
                 <ul className="bank-list">
                   <li>
                     <span>Ngân hàng</span>
-                    <strong>MBBank</strong>
+                    <strong>{paymentSettings.bankName.replace(/\(.*\)/, '').trim() || 'MBBank'}</strong>
                   </li>
                   <li>
                     <span>Số tài khoản</span>
                     <strong>
-                      0369 399 740
-                      <button type="button" onClick={() => handleCopy('0369399740', 'stk')}>
+                      {paymentSettings.accountNumber}
+                      <button type="button" onClick={() => handleCopy(paymentSettings.accountNumber.replace(/\s/g, ''), 'stk')}>
                         <Copy size={14} /> {copied === 'stk' ? 'Đã copy' : 'Copy'}
                       </button>
                     </strong>
                   </li>
                   <li>
                     <span>Chủ tài khoản</span>
-                    <strong>CHUPCHOET ROOM STUDIO</strong>
+                    <strong>{paymentSettings.accountHolder}</strong>
                   </li>
                   <li>
                     <span>Số tiền</span>
