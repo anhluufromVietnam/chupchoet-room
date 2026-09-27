@@ -2,7 +2,10 @@ import { NextResponse } from 'next/server'
 import { promises as fs } from 'fs'
 import path from 'path'
 
-const UPLOAD_DIR = path.join(process.cwd(), 'public', 'uploads')
+// Runtime uploads live outside public/ — production Next.js only serves
+// files that existed in public/ at build time, so they are served via
+// /api/uploads/[name] instead.
+const UPLOAD_DIR = path.join(process.cwd(), 'data', 'uploads')
 const MAX_SIZE = 5 * 1024 * 1024
 const ALLOWED_TYPES = ['image/jpeg', 'image/png', 'image/webp', 'image/gif']
 
@@ -30,7 +33,7 @@ export async function POST(req: Request) {
       const name = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${ext}`
       const buffer = Buffer.from(await file.arrayBuffer())
       await fs.writeFile(path.join(UPLOAD_DIR, name), buffer)
-      urls.push(`/uploads/${name}`)
+      urls.push(`/api/uploads/${name}`)
     }
     return NextResponse.json({ urls })
   } catch {
