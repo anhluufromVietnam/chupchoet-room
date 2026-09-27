@@ -83,6 +83,7 @@ function BookingWizard() {
 
   // Step 1 — studio
   const [studioId, setStudioId] = useState('')
+  const [cardImg, setCardImg] = useState<Record<string, number>>({})
   // Step 2 — time
   const [rentalType, setRentalType] = useState<'hourly' | 'daily'>('hourly')
   const [checkInDate, setCheckInDate] = useState(toDateInputValue(new Date()))
@@ -341,15 +342,54 @@ function BookingWizard() {
               <div className="studio-grid">
                 {studios.map((s) => {
                   const active = s.id === studioId
+                  const imgIdx = ((cardImg[s.id] ?? 0) % s.images.length + s.images.length) % s.images.length
                   return (
-                    <button
+                    <div
                       key={s.id}
-                      type="button"
+                      role="button"
+                      tabIndex={0}
                       className={`studio-card ${active ? 'selected' : ''}`}
                       onClick={() => setStudioId(s.id)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' || e.key === ' ') {
+                          e.preventDefault()
+                          setStudioId(s.id)
+                        }
+                      }}
                     >
                       <div className="studio-card-photo">
-                        <img src={s.images[0]} alt={s.name} />
+                        <img src={s.images[imgIdx]} alt={s.name} />
+                        {s.images.length > 1 && (
+                          <>
+                            <button
+                              type="button"
+                              className="studio-card-nav prev"
+                              aria-label="Ảnh trước"
+                              onClick={(e) => {
+                                e.stopPropagation()
+                                setCardImg((m) => ({ ...m, [s.id]: (imgIdx - 1 + s.images.length) % s.images.length }))
+                              }}
+                            >
+                              <ChevronLeft size={15} />
+                            </button>
+                            <button
+                              type="button"
+                              className="studio-card-nav next"
+                              aria-label="Ảnh sau"
+                              onClick={(e) => {
+                                e.stopPropagation()
+                                setCardImg((m) => ({ ...m, [s.id]: (imgIdx + 1) % s.images.length }))
+                              }}
+                            >
+                              <ChevronRight size={15} />
+                            </button>
+                            <div className="studio-card-dots">
+                              {s.images.map((_, di) => (
+                                <span key={di} className={`studio-card-dot ${di === imgIdx ? 'active' : ''}`} />
+                              ))}
+                            </div>
+                          </>
+                        )}
                         {active && (
                           <span className="studio-card-check">
                             <CheckCircle2 size={18} />
@@ -370,7 +410,7 @@ function BookingWizard() {
                           <span>{formatCurrency(s.pricePerDay)}/ngày</span>
                         </div>
                       </div>
-                    </button>
+                    </div>
                   )
                 })}
               </div>

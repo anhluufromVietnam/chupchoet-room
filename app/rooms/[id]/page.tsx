@@ -7,6 +7,7 @@ import {
   Camera,
   Check,
   ChevronLeft,
+  ChevronRight,
   Clock,
   Heart,
   MapPin,
@@ -17,6 +18,7 @@ import {
   Timer,
   Users,
   Wifi,
+  X,
 } from 'lucide-react'
 import { Header } from '@/components/Header'
 import { Footer } from '@/components/Footer'
@@ -26,6 +28,7 @@ import { getRoomById } from '@/lib/services'
 export default function RoomDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const resolvedParams = use(params)
   const [room, setRoom] = useState<Studio | null>(null)
+  const [lightbox, setLightbox] = useState<number | null>(null)
 
   useEffect(() => {
     let active = true
@@ -40,6 +43,22 @@ export default function RoomDetailPage({ params }: { params: Promise<{ id: strin
       active = false
     }
   }, [resolvedParams.id])
+
+  useEffect(() => {
+    if (lightbox === null || !room) return
+    const total = room.images.length
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setLightbox(null)
+      else if (e.key === 'ArrowLeft') setLightbox((i) => (i === null ? i : (i - 1 + total) % total))
+      else if (e.key === 'ArrowRight') setLightbox((i) => (i === null ? i : (i + 1) % total))
+    }
+    window.addEventListener('keydown', onKey)
+    document.body.style.overflow = 'hidden'
+    return () => {
+      window.removeEventListener('keydown', onKey)
+      document.body.style.overflow = ''
+    }
+  }, [lightbox, room])
 
   if (!room) {
     return (
@@ -103,16 +122,76 @@ export default function RoomDetailPage({ params }: { params: Promise<{ id: strin
         {/* Gallery */}
         <section className="mx-auto mt-6 max-w-6xl px-5">
           <div className="detail-gallery">
-            <div className="detail-gallery-main">
+            <button
+              type="button"
+              className="detail-gallery-main"
+              aria-label="Xem ảnh lớn"
+              onClick={() => setLightbox(0)}
+            >
               <img src={room.images?.[0] || DEFAULT_STUDIO_IMAGE} alt={room.name} />
-            </div>
-            {room.images.slice(1, 5).map((img, idx) => (
-              <div key={idx} className="detail-gallery-thumb">
-                <img src={img} alt={`${room.name} ${idx + 2}`} />
-              </div>
-            ))}
+            </button>
+            {room.images.slice(1, 5).map((img, idx) => {
+              const extra = room.images.length - 5
+              const showMore = idx === 3 && extra > 0
+              return (
+                <button
+                  key={idx}
+                  type="button"
+                  className="detail-gallery-thumb"
+                  aria-label={`Xem ảnh ${idx + 2}`}
+                  onClick={() => setLightbox(idx + 1)}
+                >
+                  <img src={img} alt={`${room.name} ${idx + 2}`} />
+                  {showMore && <span className="gallery-more">+{extra}</span>}
+                </button>
+              )
+            })}
           </div>
         </section>
+
+        {/* Lightbox */}
+        {lightbox !== null && room.images.length > 0 && (
+          <div className="lightbox" role="dialog" aria-label="Xem ảnh" onClick={() => setLightbox(null)}>
+            <button
+              type="button"
+              className="lightbox-close"
+              aria-label="Đóng"
+              onClick={() => setLightbox(null)}
+            >
+              <X size={20} />
+            </button>
+            <button
+              type="button"
+              className="lightbox-nav prev"
+              aria-label="Ảnh trước"
+              onClick={(e) => {
+                e.stopPropagation()
+                setLightbox((lightbox - 1 + room.images.length) % room.images.length)
+              }}
+            >
+              <ChevronLeft size={24} />
+            </button>
+            <img
+              src={room.images[lightbox]}
+              alt={`${room.name} ${lightbox + 1}`}
+              onClick={(e) => e.stopPropagation()}
+            />
+            <button
+              type="button"
+              className="lightbox-nav next"
+              aria-label="Ảnh sau"
+              onClick={(e) => {
+                e.stopPropagation()
+                setLightbox((lightbox + 1) % room.images.length)
+              }}
+            >
+              <ChevronRight size={24} />
+            </button>
+            <div className="lightbox-counter">
+              {lightbox + 1} / {room.images.length}
+            </div>
+          </div>
+        )}
 
         {/* Content + booking dock */}
         <section className="detail-layout mx-auto mt-10 max-w-6xl px-5">
