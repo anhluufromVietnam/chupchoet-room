@@ -16,6 +16,9 @@ export async function POST(req: Request) {
     if (!booking?.code || !booking?.studioId) {
       return NextResponse.json({ error: 'Thiếu dữ liệu đơn đặt' }, { status: 400 })
     }
+    if (!booking.id) {
+      booking.id = `bk_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`
+    }
     const db = await readDb()
     db.bookings.unshift(booking)
     await writeDb(db)
